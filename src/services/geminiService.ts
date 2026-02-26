@@ -1,8 +1,24 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+function getAI() {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("GEMINI_API_KEY is not defined. AI features will not work.");
+      // We still create the instance to avoid null checks everywhere, 
+      // but it will fail on actual calls which we can handle.
+      aiInstance = new GoogleGenAI({ apiKey: "MISSING_KEY" });
+    } else {
+      aiInstance = new GoogleGenAI({ apiKey });
+    }
+  }
+  return aiInstance;
+}
 
 export async function analyzeVideo(videoBase64: string, mimeType: string) {
+  const ai = getAI();
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [
@@ -29,6 +45,7 @@ export async function analyzeVideo(videoBase64: string, mimeType: string) {
 }
 
 export async function verifyVideo(videoBase64: string, mimeType: string) {
+  const ai = getAI();
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [
@@ -52,6 +69,7 @@ export async function verifyVideo(videoBase64: string, mimeType: string) {
 }
 
 export async function generateVoiceover(text: string, voice: string = 'Kore') {
+  const ai = getAI();
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
     contents: [{ parts: [{ text: `Say clearly and professionally: ${text}` }] }],

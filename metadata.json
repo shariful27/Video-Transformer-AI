@@ -1,0 +1,5 @@
+{
+  "name": "Video Transformer AI",
+  "description": "AI-powered video transformation tool for creating copyright-safe social media content. Includes video analysis, AI voiceover, and Google Sheets logging.",
+  "requestFramePermissions": []
+}

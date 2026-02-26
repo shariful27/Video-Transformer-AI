@@ -28,59 +28,121 @@ export const VideoTransformer: React.FC<VideoTransformerProps> = ({
   const processVideo = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    setIsProcessing(true);
     const video = videoRef.current;
+    
+    // Ensure video is loaded
+    if (video.readyState < 2) {
+      console.log("Video not ready, waiting...");
+      await new Promise((resolve) => {
+        video.onloadeddata = resolve;
+      });
+    }
+
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      console.error("Video dimensions are 0");
+      return;
+    }
+
+    setIsProcessing(true);
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
     // Set canvas size to video size
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    const canvasStream = canvas.captureStream(30);
-    const combinedStream = new MediaStream(canvasStream.getVideoTracks());
+    const canvasStream = canvas.captureStream(30); // 30 FPS is more stable
+    const combinedStream = new MediaStream();
     
+    // Advanced Audio Manipulation for Copyright Bypass
+    let audioContext: AudioContext | null = null;
+
     try {
       const videoStream = (video as any).captureStream ? (video as any).captureStream() : (video as any).mozCaptureStream ? (video as any).mozCaptureStream() : null;
-      if (videoStream) {
-        const audioTracks = videoStream.getAudioTracks();
-        if (audioTracks.length > 0) {
-          combinedStream.addTrack(audioTracks[0]);
+      if (videoStream && videoStream.getAudioTracks().length > 0) {
+        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        await audioContext.resume();
+        
+        const mediaStreamSource = audioContext.createMediaStreamSource(videoStream);
+        const mediaStreamDestination = audioContext.createMediaStreamDestination();
+
+        if (antiCopyright) {
+          // Subtle Phase/Frequency shift to bypass Audio Content ID
+          const filter = audioContext.createBiquadFilter();
+          filter.type = 'allpass';
+          filter.frequency.value = 1000;
+          
+          const gain = audioContext.createGain();
+          gain.gain.value = 0.99;
+
+          mediaStreamSource.connect(filter);
+          filter.connect(gain);
+          gain.connect(mediaStreamDestination);
+        } else {
+          mediaStreamSource.connect(mediaStreamDestination);
         }
+        
+        combinedStream.addTrack(mediaStreamDestination.stream.getAudioTracks()[0]);
       }
     } catch (err) {
-      console.warn("Could not capture audio", err);
+      console.warn("Advanced audio processing failed, falling back to raw audio", err);
+      try {
+        const videoStream = (video as any).captureStream ? (video as any).captureStream() : (video as any).mozCaptureStream ? (video as any).mozCaptureStream() : null;
+        if (videoStream && videoStream.getAudioTracks().length > 0) {
+          combinedStream.addTrack(videoStream.getAudioTracks()[0]);
+        }
+      } catch (e) {}
     }
+
+    combinedStream.addTrack(canvasStream.getVideoTracks()[0]);
 
     let mimeType = 'video/webm;codecs=vp9';
     if (MediaRecorder.isTypeSupported('video/mp4')) {
       mimeType = 'video/mp4';
-    } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
-      mimeType = 'video/webm;codecs=h264';
+    } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+      mimeType = 'video/webm;codecs=vp8';
     }
 
-    const mediaRecorder = new MediaRecorder(combinedStream, {
-      mimeType,
-      videoBitsPerSecond: 8000000, // 8 Mbps for high quality
-    });
+    let mediaRecorder: MediaRecorder;
+    try {
+      mediaRecorder = new MediaRecorder(combinedStream, {
+        mimeType,
+        videoBitsPerSecond: 8000000, // 8 Mbps is plenty for most social media
+      });
+    } catch (e) {
+      console.error("MediaRecorder initialization failed", e);
+      setIsProcessing(false);
+      return;
+    }
 
     const chunks: Blob[] = [];
-    mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    
     mediaRecorder.onstop = () => {
       const blob = new Blob(chunks, { type: mimeType });
       onComplete(blob);
       setIsProcessing(false);
+      if (audioContext) audioContext.close();
     };
 
     video.currentTime = 0;
-    video.playbackRate = 1.0; // Natural speed
-    await video.play();
-    mediaRecorder.start();
+    video.playbackRate = antiCopyright ? 1.01 : 1.0;
+    
+    try {
+      await video.play();
+      mediaRecorder.start(1000); // Collect data every second
+    } catch (e) {
+      console.error("Failed to start recording", e);
+      setIsProcessing(false);
+      return;
+    }
 
     const drawFrame = () => {
       if (video.paused || video.ended) {
-        mediaRecorder.stop();
+        if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
         return;
       }
 
@@ -90,47 +152,40 @@ export const VideoTransformer: React.FC<VideoTransformerProps> = ({
 
       ctx.save();
       
-      // Apply filter
-      ctx.filter = filter;
-      
       if (antiCopyright) {
-        // Micro-cropping/Temporal Jitter: Randomly shift the source image by 1-2 pixels
-        const offsetX = (Math.random() - 0.5) * 4;
-        const offsetY = (Math.random() - 0.5) * 4;
-        ctx.drawImage(video, offsetX, offsetY, canvas.width, canvas.height);
+        const time = Date.now() / 1000;
+        const rShift = Math.sin(time) * 0.01;
+        const gShift = Math.cos(time) * 0.01;
+        ctx.filter = `${filter} hue-rotate(${rShift}deg) brightness(${1 + gShift})`;
+
+        const scale = 1.01; // Slightly less aggressive scaling
+        const jitterX = (Math.random() - 0.5) * 4;
+        const jitterY = (Math.random() - 0.5) * 4;
         
-        // Inject invisible anti-tracking noise/code
-        // Very subtle noise
-        ctx.fillStyle = `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 0.01)`;
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(scale, scale);
+        ctx.translate(-canvas.width / 2 + jitterX, -canvas.height / 2 + jitterY);
+        
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        ctx.globalCompositeOperation = 'overlay';
+        ctx.fillStyle = `rgba(${Math.random() * 255},${Math.random() * 255},${Math.random() * 255}, 0.005)`;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Digital Fingerprint Grid: A grid of semi-transparent pixels that encodes unique session data
-        const gridSize = 16;
-        for (let x = 0; x < canvas.width; x += gridSize) {
-          for (let y = 0; y < canvas.height; y += gridSize) {
-            if (Math.random() > 0.95) {
-              ctx.fillStyle = `rgba(${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, ${Math.floor(Math.random() * 255)}, 0.005)`;
-              ctx.fillRect(x, y, 1, 1);
-            }
-          }
-        }
-        
-        // Add invisible metadata text (drawn with 1% opacity)
-        ctx.fillStyle = 'rgba(0,0,0,0.01)';
-        ctx.font = '10px Arial';
-        ctx.fillText(`ID:${Date.now()}-${Math.random()}`, Math.random() * canvas.width, Math.random() * canvas.height);
+        ctx.globalCompositeOperation = 'source-over';
       } else {
+        ctx.filter = filter;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       }
       
       ctx.restore();
 
-      // Apply watermark
       if (watermarkText) {
         ctx.filter = 'none';
-        ctx.font = '24px Inter';
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.fillText(watermarkText, 20, canvas.height - 20);
+        ctx.font = 'bold 24px Inter';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(watermarkText, 30, canvas.height - 30);
       }
 
       setProgress((video.currentTime / video.duration) * 100);
@@ -139,6 +194,16 @@ export const VideoTransformer: React.FC<VideoTransformerProps> = ({
 
     drawFrame();
   };
+
+  // Auto-start if requested
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!isProcessing && sourceUrl) {
+        processVideo();
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [sourceUrl]);
 
   return (
     <div className="space-y-4">

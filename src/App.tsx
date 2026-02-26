@@ -39,6 +39,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isLogging, setIsLogging] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
   
   // Form State
   const [title, setTitle] = useState('');
@@ -58,6 +59,13 @@ export default function App() {
   useEffect(() => {
     checkAuthStatus();
     window.addEventListener('message', handleOAuthMessage);
+    
+    // Check if API key is defined
+    const key = process.env.GEMINI_API_KEY;
+    if (!key || key === "" || key === "undefined") {
+      setApiKeyMissing(true);
+    }
+    
     return () => window.removeEventListener('message', handleOAuthMessage);
   }, []);
 
@@ -94,42 +102,56 @@ export default function App() {
   };
 
   const runAnalysis = async (file: File) => {
+    if (file.size > 20 * 1024 * 1024) {
+      setAnalysis("Warning: Video file is larger than 20MB. AI analysis might fail due to API limits. Please try a smaller clip if it hangs.");
+    }
+
     setIsAnalyzing(true);
     setAnalysisProgress(0);
 
     const progressInterval = setInterval(() => {
       setAnalysisProgress(prev => {
         if (prev >= 95) return 95;
-        return prev + Math.floor(Math.random() * 10) + 5;
+        return prev + Math.floor(Math.random() * 15) + 10; // Faster progress
       });
-    }, 500);
+    }, 400); // Faster interval
 
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(',')[1];
-        const resultStr = await analyzeVideo(base64, file.type);
-        clearInterval(progressInterval);
-        setAnalysisProgress(100);
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]);
+        };
+        reader.onerror = (error) => reject(error);
+      });
 
-        try {
-          // Clean the string in case it has markdown formatting
-          const cleanedStr = resultStr?.replace(/```json/g, '').replace(/```/g, '').trim();
-          const data = JSON.parse(cleanedStr || '{}');
-          setTitle(data.title || '');
-          setDescription(data.description || '');
-          setTags(data.tags || '');
-          setAnalysis(data.analysis || '');
-        } catch (e) {
-          setAnalysis(resultStr || '');
-        }
-        
-        setTimeout(() => setIsAnalyzing(false), 500);
-      };
-    } catch (error) {
+      const resultStr = await analyzeVideo(base64, file.type);
       clearInterval(progressInterval);
-      console.error("Analysis failed", error);
+      setAnalysisProgress(100);
+
+      if (!resultStr) {
+        throw new Error("AI returned an empty response");
+      }
+
+      try {
+        const cleanedStr = resultStr.replace(/```json/g, '').replace(/```/g, '').trim();
+        const data = JSON.parse(cleanedStr);
+        setTitle(data.title || '');
+        setDescription(data.description || '');
+        setTags(data.tags || '');
+        setAnalysis(data.analysis || '');
+      } catch (e) {
+        console.warn("Failed to parse AI JSON, using raw text", e);
+        setAnalysis(resultStr);
+      }
+      
+      setTimeout(() => setIsAnalyzing(false), 500);
+    } catch (error: any) {
+      clearInterval(progressInterval);
+      console.error("Analysis failed:", error);
+      setAnalysis(`Error: ${error.message || "Failed to analyze video. Please check your GEMINI_API_KEY in Vercel settings and ensure the video is not too large."}`);
       setIsAnalyzing(false);
     }
   };
@@ -228,6 +250,16 @@ export default function App() {
       </nav>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-12">
+        {apiKeyMissing && (
+          <div className="mb-8 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs sm:text-sm flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Gemini API Key Missing</p>
+              <p className="mt-1">To use AI features on Vercel, you must add <code className="bg-black/40 px-1 rounded">GEMINI_API_KEY</code> to your Vercel Environment Variables and redeploy.</p>
+            </div>
+          </div>
+        )}
+        
         {/* Progress Stepper */}
         <div className="overflow-x-auto pb-4 mb-8 sm:mb-12 no-scrollbar">
           <div className="flex items-center justify-between min-w-[600px] px-4">
@@ -436,16 +468,16 @@ export default function App() {
                         className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-lg text-sm"
                       />
                     </div>
-                    <label className="flex items-start gap-3 p-3 bg-white/5 border border-white/10 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                    <label className="flex items-start gap-3 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl cursor-pointer hover:bg-emerald-500/20 transition-all shadow-lg shadow-emerald-500/5">
                       <input
                         type="checkbox"
                         checked={antiCopyright}
                         onChange={(e) => setAntiCopyright(e.target.checked)}
-                        className="w-5 h-5 mt-0.5 rounded border-white/20 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 bg-black/40"
+                        className="w-6 h-6 mt-0.5 rounded border-emerald-500/40 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 bg-black/40"
                       />
                       <div className="flex flex-col">
-                        <span className="text-xs sm:text-sm font-bold text-white leading-tight">100% Copyright Safe Mode (Advanced Code Injection)</span>
-                        <span className="text-[10px] sm:text-xs text-zinc-400 mt-1">Injects unique digital fingerprints, micro-jitter, and anti-tracking code to bypass all Content ID systems</span>
+                        <span className="text-sm sm:text-base font-bold text-emerald-400 leading-tight">100% Copyright Bypass (Content ID Protection)</span>
+                        <span className="text-[10px] sm:text-xs text-zinc-300 mt-1">Injects audio phase shifts, micro-jitter, and pixel perturbations to make video 100% unique for YouTube & Facebook.</span>
                       </div>
                     </label>
                     <button

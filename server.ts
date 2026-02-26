@@ -11,13 +11,25 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("sessions.db");
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    tokens TEXT
-  )
-`);
+let db: any;
+try {
+  db = new Database("sessions.db");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      tokens TEXT
+    )
+  `);
+} catch (e) {
+  console.error("Failed to initialize SQLite database. Sessions will not persist.", e);
+  // Fallback to a mock DB object for serverless environments
+  db = {
+    prepare: () => ({
+      run: () => {},
+      get: () => null
+    })
+  };
+}
 
 async function startServer() {
   const app = express();
